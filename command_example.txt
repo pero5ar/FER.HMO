@@ -1,0 +1,1 @@
+python3 program.py -timeout 600 -award-activity "1,2,4" -award-student 1 -minmax-penalty 1 -students-file data/student[1].csv -requests-file data/requests[1].csv -overlaps-file data/overlaps[1].csv -limits-file data/limits[1].csv
