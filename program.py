@@ -11,7 +11,7 @@ program_start = time()
 # Types and classes:
 
 LookupTable = Dict[str, Set[str]]
-MovesDict = Dict[Tuple[str, str], Deque[dict]]
+MovesDict = Dict[Tuple[str, str], Deque[str]]
 
 
 class Constants:
@@ -24,6 +24,7 @@ class Constants:
         self.request_groups: Dict[Tuple[str, str], Set(str)] = {}
         self.requested_activities_per_student: Dict[str, int] = {}
         self.overlaps_matrix: LookupTable = {}
+        self.average_overlaps = 0  # TODO
         self.allowed_overlaps_by_student: Dict[str, Set[Tuple[str, str]]] = {}
 
 
@@ -32,9 +33,13 @@ class Variables:
         self.student_activity_dict: Dict[Tuple[str, str], dict] = {}
         self.student_groups_dict: LookupTable = {}
         self.group_student_dict: LookupTable = {}
-        self.moves: MovesDict = dict()
+        # priority_moves: pairs with only one possibility
+        # for groups that have enough_room and less than average_overlaps
+        self.priority_moves: Set[Tuple[str, str]] = set()
+        self.moves: MovesDict = {}
         self.groups_dict: Dict[str, dict] = {}
         self.global_moves_made: Set[Tuple[str, str]] = set()
+        self.enough_room = 5
 
 
 # Parse:
@@ -171,6 +176,7 @@ def is_move_possible(student_id, old_group, new_group, student_groups: set, cons
     overlaps_matrix = constants.overlaps_matrix
     allowed_overlaps_by_student = constants.allowed_overlaps_by_student
     if old_group["students_cnt"] <= old_group["min"] or new_group["students_cnt"] >= new_group["max"]:
+        print("cnt")
         return False
     for group_id in student_groups:
         if group_id == old_group["group_id"] or group_id not in overlaps_matrix:
@@ -179,6 +185,7 @@ def is_move_possible(student_id, old_group, new_group, student_groups: set, cons
                 and (group_id, new_group["group_id"]) in allowed_overlaps_by_student[student_id]:
             continue
         if new_group["group_id"] in overlaps_matrix[group_id]:
+            print("overlap")
             return False
     return True
 
@@ -191,7 +198,6 @@ def is_state_possible(variables: Variables, constants: Constants):
     allowed_overlaps_by_student = constants.allowed_overlaps_by_student
     if any(group["students_cnt"] < group["min"] or group["students_cnt"] > group["max"]
            for group in groups_dict.values()):
-        print("One group over or under capacity")
         return False
     for student_id, student_groups in student_groups_dict.items():
         checked = set()
@@ -291,11 +297,13 @@ def make_move(student_id: str, activity_id: str, new_group_id: str, old_group_id
     variables.groups_dict[old_group_id]["students_cnt"] -= 1
     variables.groups_dict[new_group_id]["students_cnt"] += 1
 
+    if (student_id, activity_id) in variables.priority_moves:
+        variables.priority_moves.remove((student_id, activity_id))
     if len(variables.moves[(student_id, activity_id)]) == 1:
         variables.moves.pop((student_id, activity_id))  # it was the only one so no going back (unless undo)
     else:
         variables.moves[(student_id, activity_id)].remove(new_group_id)
-        variables.moves[(student_id, activity_id)].append(old_group_id)
+        # variables.moves[(student_id, activity_id)].append(old_group_id) -- remove comment if you want to return
 
     variables.student_activity_dict[(student_id, activity_id)]["new_group_id"] = new_group_id
     variables.student_groups_dict[student_id].remove(old_group_id)
@@ -308,8 +316,11 @@ def undo_move(student_id: str, activity_id: str, new_group_id: str, old_group_id
 
     if (student_id, activity_id) not in variables.moves:
         variables.moves[(student_id, activity_id)] = deque()
-    else:
-        variables.moves[(student_id, activity_id)].remove(old_group_id)
+        if variables.groups_dict[new_group_id]["students_cnt"] + variables.enough_room \
+                <= variables.groups_dict[new_group_id]["max"]:
+            variables.priority_moves.add((student_id, activity_id))
+    # else:  -- remove comment if you want to return
+    #     variables.moves[(student_id, activity_id)].remove(old_group_id)
     variables.moves[(student_id, activity_id)].append(new_group_id)
 
     variables.student_activity_dict[(student_id, activity_id)]["new_group_id"] = old_group_id
@@ -320,17 +331,22 @@ def undo_move(student_id: str, activity_id: str, new_group_id: str, old_group_id
 def evaluate_move(student_id: str, activity_id: str, new_group_id: str,
                   moves_made: Set[Tuple[str, str]],  # only top loop can decide to go back
                   moves_sample: MovesDict,  # sample to evaluate the move on
+                  impossible_steps_allowed: bool,
                   variables: Variables, constants: Constants, depth: int):
     old_group_id: str = variables.student_activity_dict[(student_id, activity_id)]["new_group_id"]
     old_group = variables.groups_dict[old_group_id]
     new_group = variables.groups_dict[new_group_id]
     student_groups = variables.student_groups_dict[student_id]
 
+    if (not impossible_steps_allowed or depth < 2) \
+            and not is_move_possible(student_id, old_group, new_group, student_groups, constants):
+        return None
+
     if depth == 0:
         if not is_move_possible(student_id, old_group, new_group, student_groups, constants):
             return None
         make_move(student_id, activity_id, new_group_id, old_group_id, variables)
-        if not is_state_possible(variables, constants):
+        if impossible_steps_allowed and not is_state_possible(variables, constants):
             undo_move(student_id, activity_id, new_group_id, old_group_id, variables)
             return None
         score = score_a(variables, constants) + score_b(variables, constants) + score_c(variables, constants) \
@@ -346,37 +362,48 @@ def evaluate_move(student_id: str, activity_id: str, new_group_id: str,
             continue
         moves_copy = deque(variables.moves[(move_student_id, move_activity_id)])
         for move_group_id in moves_copy:
+            move_group = variables.groups_dict[move_group_id]
+            if move_group["max"] <= move_group["students_cnt"]:
+                continue  # skip full groups
             move_score = evaluate_move(move_student_id, move_activity_id, move_group_id,
-                                       set(moves_made), moves_sample,
+                                       set(moves_made), moves_sample, impossible_steps_allowed,
                                        variables, constants, depth - 1)
             if move_score is None:
                 continue
             if score is None or score < move_score:
                 score = move_score
+            break
     undo_move(student_id, activity_id, new_group_id, old_group_id, variables)
-    return move_score
+    return score
 
 
 def create_moves_sample(variables):
     moves_sample: MovesDict = dict()
     moves_key_list = list(variables.moves.keys())
-    random_sample_max_size = 10 + int(math.sqrt(len(moves_key_list)))
-    other_sample_max_size = 2 * random_sample_max_size
+    sample_part_max_size = 10 + int(math.sqrt(len(moves_key_list)))
 
+    i = sample_part_max_size
+    # add priority_moves:
+    for key in variables.priority_moves:
+        if i == 0:
+            break
+        moves_sample[key] = variables.moves[key]
+        i -= 1
+
+    i += sample_part_max_size
     # add if more than one free:
-    i = 0
     for key, value in variables.moves.items():
-        if i == other_sample_max_size:
+        if i == 0:
             break
         for group_id in value:
             group = variables.groups_dict[group_id]
             if group["max"] - group["students_cnt"] >= 2:
                 moves_sample[key] = value
-                i += 1
+                i -= 1
                 break
 
     # add randoms:
-    for i in range(0, random_sample_max_size):
+    for _ in range(0, sample_part_max_size + i):
         key = random.choice(moves_key_list)
         if key not in variables.global_moves_made:
             moves_sample[key] = variables.moves[key]
@@ -389,6 +416,7 @@ def make_best_move(variables, constants):
     best_move = None
 
     subiteration = 0
+    evaluation_sample = create_moves_sample(variables)
     for student_id, activity_id in variables.moves:
         subiteration += 1
         if subiteration % 1000 == 0:
@@ -400,11 +428,8 @@ def make_best_move(variables, constants):
             group = variables.groups_dict[group_id]
             if group["max"] <= group["students_cnt"]:
                 continue  # skip full groups
-            evaluation_sample = create_moves_sample(variables)
-            if subiteration % 100 == 0:
-                print(len(evaluation_sample))
             score = evaluate_move(student_id, activity_id, group_id,
-                                  set(variables.global_moves_made), evaluation_sample,
+                                  set(variables.global_moves_made), evaluation_sample, False,
                                   variables, constants, depth)
             if score is None:
                 continue
@@ -425,9 +450,8 @@ def make_best_move(variables, constants):
                 continue  # was the only option for that, not going back
             moves_copy = deque(variables.moves[(student_id, activity_id)])
             for group_id in moves_copy:
-                evaluation_sample = create_moves_sample(variables)
                 score = evaluate_move(student_id, activity_id, group_id,
-                                      set(), evaluation_sample,
+                                      set(), evaluation_sample, True,
                                       variables, constants, depth)
                 if score is None:
                     continue
@@ -461,6 +485,7 @@ def main():
     student_groups_dict = variables.student_groups_dict
     group_student_dict = variables.group_student_dict
     requests_set = constants.requests_set
+    priority_moves = variables.priority_moves
     moves = variables.moves
     request_groups = constants.request_groups
     requested_activities_per_student = constants.requested_activities_per_student
@@ -516,10 +541,15 @@ def main():
 
             if (student_id, activity_id) not in request_groups:
                 request_groups[(student_id, activity_id)] = set()
+                if groups_dict[req_group_id]["students_cnt"] + variables.enough_room \
+                        <= groups_dict[req_group_id]["max"]:
+                    priority_moves.add((student_id, activity_id))
                 moves[(student_id, activity_id)] = deque()
                 if student_id not in requested_activities_per_student:
                     requested_activities_per_student[student_id] = 0
                 requested_activities_per_student[student_id] += 1
+            elif (student_id, activity_id) in priority_moves:
+                priority_moves.remove((student_id, activity_id))
             request_groups[(student_id, activity_id)].add(req_group_id)
             moves[(student_id, activity_id)].append(req_group_id)
 
