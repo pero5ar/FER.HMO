@@ -20,6 +20,7 @@ class Constants:
         self.award_activity: List[int] = []
         self.award_student = 0
         self.minmax_penalty = 0
+        self.groups_by_activity: Dict[str, Set[str]] = {}
         self.requests_set: Set[Tuple[str, str, str]] = set()
         self.request_groups: Dict[Tuple[str, str], Set(str)] = {}
         self.requested_activities_per_student: Dict[str, int] = {}
@@ -38,7 +39,13 @@ class Variables:
         self.priority_moves: Set[Tuple[str, str]] = set()
         self.moves: MovesDict = {}
         self.groups_dict: Dict[str, dict] = {}
-        self.global_moves_made: Set[Tuple[str, str]] = set()
+        # NOT UPDATED VIA MOVE:
+        self.valid_requested_groups_by_student: Dict[str, Dict[str, str]] = {}  # s -> g -> a
+        self.collision_requested_groups_by_student: Dict[str, Dict[str, str]] = {}  # s -> g -> a
+        self.maxed_requested_groups_by_student: Dict[str, Dict[str, str]] = {}  # s -> g -> a
+        self.mined_requested_groups_by_student: Dict[str, Dict[str, str]] = {}  # s -> g -> a
+        self.requests_by_student: Dict[str, Dict[Tuple[str, str], str]] = {}  # s -> (g1, g2) -> a
+        self.global_moves_made: Set[Tuple[str, str]] = set() # (s, a)
         self.enough_room = 5
 
 
@@ -172,11 +179,11 @@ def print_result(variables: Variables):
 # Constraints:
 
 # call before make move
-def is_move_possible(student_id, old_group, new_group, student_groups: set, constants: Constants):
+def is_move_possible(student_id, activity_id, old_group, new_group, student_groups: set,
+                     variables: Variables, constants: Constants):
     overlaps_matrix = constants.overlaps_matrix
     allowed_overlaps_by_student = constants.allowed_overlaps_by_student
     if old_group["students_cnt"] <= old_group["min"] or new_group["students_cnt"] >= new_group["max"]:
-        print("cnt")
         return False
     for group_id in student_groups:
         if group_id == old_group["group_id"] or group_id not in overlaps_matrix:
@@ -185,8 +192,8 @@ def is_move_possible(student_id, old_group, new_group, student_groups: set, cons
                 and (group_id, new_group["group_id"]) in allowed_overlaps_by_student[student_id]:
             continue
         if new_group["group_id"] in overlaps_matrix[group_id]:
-            print("overlap")
             return False
+    variables.priority_moves.add((student_id, activity_id))
     return True
 
 
@@ -297,6 +304,13 @@ def make_move(student_id: str, activity_id: str, new_group_id: str, old_group_id
     variables.groups_dict[old_group_id]["students_cnt"] -= 1
     variables.groups_dict[new_group_id]["students_cnt"] += 1
 
+    variables.requests_by_student[student_id].pop((old_group_id, new_group_id))
+    student_requests_copy = set(variables.requests_by_student[student_id].keys())
+    for current_group_id, req_group_id in student_requests_copy:
+        if current_group_id == old_group_id:
+            variables.requests_by_student[student_id].pop((old_group_id, req_group_id))
+            variables.requests_by_student[student_id][(new_group_id, req_group_id)] = activity_id
+
     if (student_id, activity_id) in variables.priority_moves:
         variables.priority_moves.remove((student_id, activity_id))
     if len(variables.moves[(student_id, activity_id)]) == 1:
@@ -313,6 +327,13 @@ def make_move(student_id: str, activity_id: str, new_group_id: str, old_group_id
 def undo_move(student_id: str, activity_id: str, new_group_id: str, old_group_id: str, variables: Variables):
     variables.groups_dict[new_group_id]["students_cnt"] -= 1
     variables.groups_dict[old_group_id]["students_cnt"] += 1
+
+    variables.requests_by_student[student_id][(old_group_id, new_group_id)] = activity_id
+    student_requests_copy = set(variables.requests_by_student[student_id].keys())
+    for current_group_id, req_group_id in student_requests_copy:
+        if current_group_id == new_group_id:
+            variables.requests_by_student[student_id].pop((new_group_id, req_group_id))
+            variables.requests_by_student[student_id][(old_group_id, req_group_id)] = activity_id
 
     if (student_id, activity_id) not in variables.moves:
         variables.moves[(student_id, activity_id)] = deque()
@@ -339,11 +360,12 @@ def evaluate_move(student_id: str, activity_id: str, new_group_id: str,
     student_groups = variables.student_groups_dict[student_id]
 
     if (not impossible_steps_allowed or depth < 2) \
-            and not is_move_possible(student_id, old_group, new_group, student_groups, constants):
+            and not is_move_possible(student_id, activity_id, old_group, new_group, student_groups,
+                                     variables, constants):
         return None
 
     if depth == 0:
-        if not is_move_possible(student_id, old_group, new_group, student_groups, constants):
+        if not is_move_possible(student_id, activity_id, old_group, new_group, student_groups, variables, constants):
             return None
         make_move(student_id, activity_id, new_group_id, old_group_id, variables)
         if impossible_steps_allowed and not is_state_possible(variables, constants):
@@ -410,9 +432,8 @@ def create_moves_sample(variables):
     return moves_sample
 
 
-def make_best_move(variables, constants):
-    depth = 0
-    best_score = None
+def make_best_move(variables, constants, best_score):
+    depth = 1
     best_move = None
 
     subiteration = 0
@@ -464,6 +485,100 @@ def make_best_move(variables, constants):
             make_move(student_id, activity_id, group_id, old_group_id, variables)
             variables.global_moves_made.add((student_id, activity_id))
 
+    return best_score
+
+
+def add_to_validity_group(student_id, current_group_id, req_group_id, activity_id,
+                          variables: Variables, constants: Constants):
+    groups_dict = variables.groups_dict
+    student_groups_dict = variables.student_groups_dict
+    maxed_requested_groups_by_student = variables.maxed_requested_groups_by_student
+    mined_requested_groups_by_student = variables.mined_requested_groups_by_student
+    collision_requested_groups_by_student = variables.collision_requested_groups_by_student
+    valid_requested_groups_by_student = variables.valid_requested_groups_by_student
+    req_overlaps = constants.overlaps_matrix.get(req_group_id)
+
+    if groups_dict[req_group_id]["students_cnt"] >= groups_dict[req_group_id]["max"]:
+        maxed_requested_groups_by_student[student_id][req_group_id] = activity_id
+    elif groups_dict[current_group_id]["students_cnt"] <= groups_dict[current_group_id]["min"]:
+        mined_requested_groups_by_student[student_id][req_group_id] = activity_id
+    elif req_overlaps is not None and any([group_id in req_overlaps for group_id in student_groups_dict[student_id]]):
+        collision_requested_groups_by_student[student_id][req_group_id] = activity_id
+    else:
+        valid_requested_groups_by_student[student_id][req_group_id] = activity_id
+
+
+def compute_validity_groups(variables: Variables, constants: Constants):
+    for student_id, group_pair_dict in variables.requests_by_student.items():
+        variables.valid_requested_groups_by_student[student_id] = {}
+        variables.collision_requested_groups_by_student[student_id] = {}
+        variables.maxed_requested_groups_by_student[student_id] = {}
+        variables.mined_requested_groups_by_student[student_id] = {}
+        for (current_group_id, req_group_id), activity_id in group_pair_dict.items():
+            add_to_validity_group(student_id, current_group_id, req_group_id, activity_id, variables, constants)
+
+        if len(variables.valid_requested_groups_by_student[student_id]) == 0:
+            variables.valid_requested_groups_by_student.pop(student_id)
+        if len(variables.collision_requested_groups_by_student[student_id]) == 0:
+            variables.collision_requested_groups_by_student.pop(student_id)
+        if len(variables.maxed_requested_groups_by_student[student_id]) == 0:
+            variables.maxed_requested_groups_by_student.pop(student_id)
+        if len(variables.mined_requested_groups_by_student[student_id]) == 0:
+            variables.mined_requested_groups_by_student.pop(student_id)
+
+
+def make_valid_moves(variables: Variables, constants: Constants, best_score):
+    compute_validity_groups(variables, constants)
+    any_moved = False
+    moved_counter = 0
+
+    for student_id, groups_dict in variables.valid_requested_groups_by_student.items():
+        for new_group_id, activity_id in groups_dict.items():
+            if (student_id, activity_id) in variables.global_moves_made:
+                continue
+            old_group_id = variables.student_activity_dict[(student_id, activity_id)]["new_group_id"]
+
+            if not is_move_possible(student_id, activity_id,
+                                    variables.groups_dict[old_group_id],
+                                    variables.groups_dict[new_group_id],
+                                    variables.student_groups_dict[student_id],
+                                    variables, constants):
+                continue
+
+            make_move(student_id, activity_id, new_group_id, old_group_id, variables)
+
+            score = score_a(variables, constants) + score_b(variables, constants) + score_c(variables, constants) \
+                - score_d(variables, constants) - score_e(variables, constants)
+
+            if score > best_score:
+                any_moved = True
+                best_score = score
+                moved_counter += 1
+                variables.global_moves_made.add((student_id, activity_id))
+                continue  # get out of loop due to possible collisions 
+            else:
+                undo_move(student_id, activity_id, new_group_id, old_group_id, variables)
+
+    if not any_moved:  # try to move an existing one
+        for student_id, groups_dict in variables.valid_requested_groups_by_student.items():
+            for new_group_id, activity_id in groups_dict.items():
+                if (student_id, activity_id) not in variables.global_moves_made:
+                    continue
+                old_group_id = variables.student_activity_dict[(student_id, activity_id)]["new_group_id"]
+                make_move(student_id, activity_id, new_group_id, old_group_id, variables)
+                score = score_a(variables, constants) + score_b(variables, constants) + score_c(variables, constants) \
+                    - score_d(variables, constants) - score_e(variables, constants)
+                if score > best_score:
+                    any_moved = True
+                    best_score = score
+                    moved_counter += 1
+                    continue  # get out of loop due to possible collisions 
+                else:
+                    undo_move(student_id, activity_id, new_group_id, old_group_id, variables)
+    
+    print("Valid moves made ", moved_counter)
+    return any_moved, best_score
+
 
 def main():
     args = parse_arguments()
@@ -489,6 +604,8 @@ def main():
     moves = variables.moves
     request_groups = constants.request_groups
     requested_activities_per_student = constants.requested_activities_per_student
+    groups_by_activity = constants.groups_by_activity
+    requests_by_student = variables.requests_by_student
     overlaps_matrix = constants.overlaps_matrix
     allowed_overlaps_by_student = constants.allowed_overlaps_by_student
     groups_dict = variables.groups_dict
@@ -498,12 +615,16 @@ def main():
             open(overlaps_file, newline='') as overlapsCsvFile, \
             open(limits_file, newline='') as limitsCsvFile:
 
+        # Limits file:
+
         limit_rows = csv.reader(limitsCsvFile, delimiter=',', quotechar='|')
         next(limit_rows)  # skip header
         for row in limit_rows:
             limit = parse_limit_row(row)
             group_id = limit["group_id"]
             groups_dict[group_id] = limit
+
+        # Students file:
 
         student_rows = csv.reader(studentsCsvFile, delimiter=',', quotechar='|')
         next(student_rows)  # skip header
@@ -514,7 +635,16 @@ def main():
             student_id, activity_id, new_group_id = \
                 student["student_id"], student["activity_id"], student["new_group_id"]
 
+            # Constants calculation:
+
             student_activity_dict[(student_id, activity_id)] = student
+
+            if activity_id not in groups_by_activity:
+                groups_by_activity[activity_id] = set()
+            groups_by_activity[activity_id].add(student["group_id"])
+            groups_by_activity[activity_id].add(student["new_group_id"])
+
+            # Variables calculation:
 
             if student_id not in student_groups_dict:
                 student_groups_dict[student_id] = set()
@@ -526,6 +656,9 @@ def main():
             if student["new_group_id"] != student["group_id"]:
                 groups_dict[student["new_group_id"]]["students_cnt"] += 1
                 groups_dict[student["group_id"]]["students_cnt"] -= 1
+                variables.global_moves_made.add((student["group_id"], student["new_group_id"]))
+
+        # Requests file:
 
         request_rows = csv.reader(requestsCsvFile, delimiter=',', quotechar='|')
         next(request_rows)  # skip header
@@ -536,22 +669,45 @@ def main():
 
             if (student_id, activity_id) not in student_activity_dict:
                 continue  # zanemari zahtjeve kojih nema u student.csv
+            if activity_id not in groups_by_activity:
+                continue  # kako prebaciti studenta u aktivnost koja ne postoji
+            if student_id not in student_groups_dict:
+                continue  # kako prebaciti studenta koji ne postoji
+
+            # Constants calculation:
 
             requests_set.add((student_id, activity_id, req_group_id))
 
             if (student_id, activity_id) not in request_groups:
                 request_groups[(student_id, activity_id)] = set()
+                if student_id not in requested_activities_per_student:
+                    requested_activities_per_student[student_id] = 0
+                requested_activities_per_student[student_id] += 1
+            request_groups[(student_id, activity_id)].add(req_group_id)
+
+            groups_by_activity[activity_id].add(req_group_id)
+
+            # Variables calculation:
+
+            student = student_activity_dict[(student_id, activity_id)]
+            current_group_id = student["new_group_id"]
+            if current_group_id == req_group_id:
+                continue  # request already approved
+
+            if student_id not in requests_by_student:
+                requests_by_student[student_id] = {}
+            requests_by_student[student_id][(current_group_id, req_group_id)] = activity_id
+
+            if (student_id, activity_id) not in moves:
                 if groups_dict[req_group_id]["students_cnt"] + variables.enough_room \
                         <= groups_dict[req_group_id]["max"]:
                     priority_moves.add((student_id, activity_id))
                 moves[(student_id, activity_id)] = deque()
-                if student_id not in requested_activities_per_student:
-                    requested_activities_per_student[student_id] = 0
-                requested_activities_per_student[student_id] += 1
             elif (student_id, activity_id) in priority_moves:
                 priority_moves.remove((student_id, activity_id))
-            request_groups[(student_id, activity_id)].add(req_group_id)
             moves[(student_id, activity_id)].append(req_group_id)
+
+        # Overlaps file:
 
         overlap_rows = csv.reader(overlapsCsvFile, delimiter=',', quotechar='|')
         next(overlap_rows)  # skip header
@@ -571,11 +727,20 @@ def main():
                     allowed_overlaps_by_student[student_id].add((group1_id, group2_id))
                     allowed_overlaps_by_student[student_id].add((group2_id, group1_id))
 
+    # end all files
+
+    # algorithm:
+
     iteration = 0
     algorithm_start = time()
+    best_score = score_a(variables, constants) + score_b(variables, constants) + score_c(variables, constants) \
+        - score_d(variables, constants) - score_e(variables, constants)
     while time() < program_start + constants.timeout:
         print("-----------------------------------------------------------------------")
-        make_best_move(variables, constants)
+        any_moved, best_score = make_valid_moves(variables, constants, best_score)
+        if not any_moved:
+            break
+            #  best_score = make_best_move(variables, constants, best_score)
         iteration += 1
         print("-----------------------------------------------------------------------")
 
@@ -594,6 +759,9 @@ def main():
     score = score_a(variables, constants) + score_b(variables, constants) + score_c(variables, constants) \
         - score_d(variables, constants) - score_e(variables, constants)
     print("score is: ", score)
+
+    print(a, " + ", b, " + ", c, " - ", d, " - ", e)
+    print("possible? ", is_state_possible(variables, constants))
 
     print("program took: ", time() - program_start, " seconds")
 
