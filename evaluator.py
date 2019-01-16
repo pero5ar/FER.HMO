@@ -11,7 +11,6 @@ MovesDict = Dict[Tuple[str, str], Deque[dict]]
 
 class Constants:
     def __init__(self):
-        self.timeout = 0
         self.award_activity: List[int] = []
         self.award_student = 0
         self.minmax_penalty = 0
@@ -37,11 +36,6 @@ def parse_arguments():
     parse = argparse.ArgumentParser(
         description='',
         formatter_class=argparse.RawTextHelpFormatter)
-
-    parse.add_argument(
-        '-timeout', '--timeout',
-        dest='timeout', required=True,
-        help='Timeout.')
 
     parse.add_argument(
         '-award-activity', '--award-activity',
@@ -231,7 +225,6 @@ def main():
     constants = Constants()
     variables = Variables()
 
-    constants.timeout = int(args.timeout)
     constants.award_activity = [int(x) for x in args.award_activity.split(",")]
     constants.award_student = int(args.award_student)
     constants.minmax_penalty = int(args.minmax_penalty)

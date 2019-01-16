@@ -178,7 +178,7 @@ def print_result(variables: Variables):
         student["activity_id"],
         student["swap_weight"],
         student["group_id"],
-        student["new_group_id"] if student["new_group_id"] != student["group_id"] else "0"
+        student["new_group_id"]
     ] for student in variables.student_activity_dict.values()]
     with open('out.csv', 'w', newline='') as file:
         writer = csv.writer(file)
