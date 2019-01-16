@@ -468,7 +468,9 @@ def make_best_move(variables, constants, best_score):
                     old_group_id: str = variables.student_activity_dict[(student_id, activity_id)]["new_group_id"]
                     make_move(student_id, activity_id, group_id, old_group_id, variables)
                     variables.global_moves_made.add((student_id, activity_id))
-                return best_score
+                    return True
+                else:
+                    return False
 
             group = variables.groups_dict[group_id]
             if group["max"] <= group["students_cnt"]:
@@ -489,6 +491,7 @@ def make_best_move(variables, constants, best_score):
         old_group_id: str = variables.student_activity_dict[(student_id, activity_id)]["new_group_id"]
         make_move(student_id, activity_id, group_id, old_group_id, variables)
         variables.global_moves_made.add((student_id, activity_id))
+        return True
     else:
         # no move found, try going back:
         depth += 1  # if going back, probably needs deeper search
@@ -504,7 +507,9 @@ def make_best_move(variables, constants, best_score):
                         old_group_id: str = variables.student_activity_dict[(student_id, activity_id)]["new_group_id"]
                         make_move(student_id, activity_id, group_id, old_group_id, variables)
                         variables.global_moves_made.add((student_id, activity_id))
-                    return best_score
+                        return True
+                    else:
+                        return False
 
                 score = evaluate_move(student_id, activity_id, group_id,
                                       set(), evaluation_sample, True,
@@ -520,8 +525,9 @@ def make_best_move(variables, constants, best_score):
             old_group_id: str = variables.student_activity_dict[(student_id, activity_id)]["new_group_id"]
             make_move(student_id, activity_id, group_id, old_group_id, variables)
             variables.global_moves_made.add((student_id, activity_id))
+            return True
 
-    return best_score
+    return False
 
 
 def add_to_validity_group(student_id, current_group_id, req_group_id, activity_id,
@@ -892,7 +898,10 @@ def main():
             break
 
         if not any_moved and not any_swapped:
-            best_score = make_best_move(variables, constants, best_score)
+            made_move = make_best_move(variables, constants, best_score)
+            if made_move:
+                best_score = score_a(variables, constants) + score_b(variables, constants) \
+                    + score_c(variables, constants) - score_d(variables, constants) - score_e(variables, constants)
 
         print("Current best score: ", best_score)
         iteration += 1
