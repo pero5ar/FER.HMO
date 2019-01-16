@@ -599,7 +599,6 @@ def make_valid_moves(variables: Variables, constants: Constants, best_score):
                 best_score = score
                 moved_counter += 1
                 variables.global_moves_made.add((student_id, activity_id))
-                continue  # get out of loop due to possible collisions 
             else:
                 undo_move(student_id, activity_id, new_group_id, old_group_id, variables)
 
@@ -633,7 +632,6 @@ def make_valid_moves(variables: Variables, constants: Constants, best_score):
                     best_score = score
                     moved_counter += 1
                     variables.global_moves_made.add((student_id, activity_id))
-                    continue  # get out of loop due to possible collisions 
                 else:
                     undo_move(student_id, activity_id, new_group_id, old_group_id, variables)
     
